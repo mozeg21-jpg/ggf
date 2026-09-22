@@ -1,0 +1,7 @@
+{
+  "name": "متجرك الإلكتروني",
+  "description": "متجر إلكتروني كامل وجاهز للتشغيل بـ Next.js 16 + Prisma + SQLite + Tailwind — صفحة هبوط + سلة + إتمام طلب + تتبع طلبات + لوحة تحكم كاملة",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
