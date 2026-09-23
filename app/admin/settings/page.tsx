@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/prisma";
+import db from "@/lib/db";
 import { getSettings, isOn } from "@/lib/settings";
 import { formatPrice } from "@/lib/format";
 import SettingsForm from "@/components/admin/SettingsForm";
@@ -9,11 +9,12 @@ export const dynamic = "force-dynamic";
 export default async function AdminSettingsPage() {
   const [settings, products] = await Promise.all([
     getSettings(),
-    prisma.product.findMany({
-      where: { active: true },
-      select: { id: true, name: true, priceCents: true, currency: true },
-      orderBy: { name: "asc" },
-    }),
+    db.prepare("SELECT id, name, priceCents, currency FROM Product WHERE active = 1 ORDER BY name ASC").all() as {
+      id: string;
+      name: string;
+      priceCents: number;
+      currency: string;
+    }[],
   ]);
 
   return (

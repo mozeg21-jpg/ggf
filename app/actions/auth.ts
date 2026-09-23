@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { prisma } from "@/lib/prisma";
+import db from "@/lib/db";
 import {
   hashPassword,
   verifyPassword,
@@ -35,20 +35,18 @@ export async function registerAction(
   if (password.length < 6)
     return { error: "كلمة السر لازم تكون 6 حروف على الأقل." };
 
-  const existing = await prisma.user.findUnique({ where: { email } });
+  const existing = db.prepare("SELECT id FROM User WHERE email = ?").get(email);
   if (existing) return { error: "فيه حساب بالإيميل ده بالفعل. سجّل دخول." };
 
-  const user = await prisma.user.create({
-    data: {
-      name,
-      email,
-      phone: phone || null,
-      passwordHash: await hashPassword(password),
-      role: "customer",
-    },
-  });
+  const userId = "user_" + Math.random().toString(36).substring(2, 15);
+  const passwordHash = await hashPassword(password);
+  
+  db.prepare(`
+    INSERT INTO User (id, name, email, phone, passwordHash, role)
+    VALUES (?, ?, ?, ?, ?, 'customer')
+  `).run(userId, name, email, phone || null, passwordHash);
 
-  await createSession(user.id);
+  await createSession(userId);
   redirect(redirectTo);
 }
 
@@ -65,7 +63,11 @@ export async function loginAction(
   if (!isValidEmail(email) || !password)
     return { error: "ادخل إيميل وكلمة سر صحيحين." };
 
-  const user = await prisma.user.findUnique({ where: { email } });
+  const user = db.prepare("SELECT * FROM User WHERE email = ?").get(email) as {
+    id: string;
+    passwordHash: string;
+  } | undefined;
+
   // نفس رسالة الخطأ في الحالتين (ما نكشفش إذا الإيميل موجود)
   if (!user || !(await verifyPassword(password, user.passwordHash))) {
     return { error: "الإيميل أو كلمة السر غير صحيحة." };

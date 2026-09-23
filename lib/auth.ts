@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { prisma } from "@/lib/prisma";
+import db from "@/lib/db";
 
 const COOKIE_NAME = "session";
 const MAX_AGE = 60 * 60 * 24 * 30; // 30 يوم
@@ -71,7 +71,13 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
     const { payload } = await jwtVerify(token, getSecret());
     const uid = payload.uid as string | undefined;
     if (!uid) return null;
-    const user = await prisma.user.findUnique({ where: { id: uid } });
+    const user = db.prepare("SELECT * FROM User WHERE id = ?").get(uid) as {
+      id: string;
+      name: string;
+      email: string;
+      phone: string | null;
+      role: string;
+    } | undefined;
     if (!user) return null;
     return {
       id: user.id,

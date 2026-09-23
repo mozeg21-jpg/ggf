@@ -2,7 +2,8 @@
 
 import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { prisma } from "@/lib/prisma";
+import db from "@/lib/db";
+import { Product } from "@/lib/products";
 import { getCurrentUser, hashPassword, createSession } from "@/lib/auth";
 import { createOrder, type NewOrderItem } from "@/lib/orders";
 import { getBumpOffer } from "@/lib/settings";
@@ -81,9 +82,11 @@ export async function placeOrderAction(
   const lines = parseCart(cleanStr(formData.get("items"), 20000));
   if (lines.length === 0) return { error: "سلتك فاضية." };
 
-  const products = await prisma.product.findMany({
-    where: { id: { in: lines.map((l) => l.productId) }, active: true },
-  });
+  const ids = lines.map((l) => l.productId);
+  if (ids.length === 0) return { error: "المنتجات في سلتك مش متاحة حالياً." };
+  
+  const placeholders = ids.map(() => "?").join(",");
+  const products = db.prepare(`SELECT * FROM Product WHERE id IN (${placeholders}) AND active = 1`).all(...ids) as Product[];
   const byId = new Map(products.map((p) => [p.id, p]));
 
   const items: NewOrderItem[] = [];
@@ -129,20 +132,20 @@ export async function placeOrderAction(
       return { error: "لإنشاء حساب لازم إيميل صحيح." };
     if (password.length < 6)
       return { error: "كلمة سر الحساب لازم 6 حروف على الأقل." };
-    const existing = await prisma.user.findUnique({ where: { email } });
+    
+    const existing = db.prepare("SELECT id FROM User WHERE email = ?").get(email);
     if (existing)
       return { error: "فيه حساب بالإيميل ده. سجّل دخول الأول أو اشترِ كزائر." };
-    const user = await prisma.user.create({
-      data: {
-        name,
-        email,
-        phone: phone || null,
-        passwordHash: await hashPassword(password),
-        role: "customer",
-      },
-    });
-    await createSession(user.id);
-    userId = user.id;
+    
+    const newUserId = "user_" + Math.random().toString(36).substring(2, 15);
+    const passwordHash = await hashPassword(password);
+    db.prepare(`
+      INSERT INTO User (id, name, email, phone, passwordHash, role)
+      VALUES (?, ?, ?, ?, ?, 'customer')
+    `).run(newUserId, name, email, phone || null, passwordHash);
+
+    await createSession(newUserId);
+    userId = newUserId;
   }
 
   // 4) إثبات الدفع (مطلوب للتحويل)
@@ -176,5 +179,5 @@ export async function placeOrderAction(
     items,
   });
 
-  return { ok: true, orderNumber: order.orderNumber };
+  return { ok: true, orderNumber: order!.orderNumber };
 }

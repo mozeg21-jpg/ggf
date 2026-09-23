@@ -1,5 +1,6 @@
 import "server-only";
-import { prisma } from "@/lib/prisma";
+import db from "@/lib/db";
+import { Product, toProductView } from "@/lib/products";
 
 /**
  * إعدادات المتجر المخزنة في قاعدة البيانات (مفتاح/قيمة).
@@ -27,7 +28,7 @@ export type SettingKey = (typeof SETTING_KEYS)[number];
 
 /** كل الإعدادات كخريطة { key: value } — القيم الناقصة بترجع "" */
 export async function getSettings(): Promise<Record<SettingKey, string>> {
-  const rows = await prisma.setting.findMany();
+  const rows = db.prepare("SELECT * FROM Setting").all() as { key: string; value: string }[];
   const map = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   const out = {} as Record<SettingKey, string>;
   for (const k of SETTING_KEYS) out[k] = map[k] ?? "";
@@ -38,16 +39,19 @@ export async function getSettings(): Promise<Record<SettingKey, string>> {
 export async function saveSettings(
   values: Partial<Record<SettingKey, string>>
 ): Promise<void> {
-  const ops = Object.entries(values)
-    .filter(([k]) => (SETTING_KEYS as readonly string[]).includes(k))
-    .map(([key, value]) =>
-      prisma.setting.upsert({
-        where: { key },
-        update: { value: value ?? "" },
-        create: { key, value: value ?? "" },
-      })
-    );
-  await prisma.$transaction(ops);
+  const insertOrUpdate = db.prepare(`
+    INSERT INTO Setting (key, value, updatedAt)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = CURRENT_TIMESTAMP
+  `);
+
+  db.transaction(() => {
+    for (const [key, value] of Object.entries(values)) {
+      if ((SETTING_KEYS as readonly string[]).includes(key)) {
+        insertOrUpdate.run(key, value ?? "");
+      }
+    }
+  })();
 }
 
 /** هل الإعداد مفعّل؟ ("1" = مفعّل) */
@@ -94,9 +98,7 @@ export async function getBumpOffer(): Promise<BumpOffer | null> {
   const s = await getSettings();
   if (!isOn(s.bump_enabled) || !s.bump_product_id) return null;
 
-  const product = await prisma.product.findFirst({
-    where: { id: s.bump_product_id, active: true },
-  });
+  const product = db.prepare("SELECT * FROM Product WHERE id = ? AND active = 1").get(s.bump_product_id) as Product | undefined;
   if (!product) return null;
 
   const bumpEgp = Number(s.bump_price.replace(/,/g, ""));

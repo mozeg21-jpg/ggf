@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import db from "@/lib/db";
 import { saveSettings, type SettingKey } from "@/lib/settings";
 import { cleanStr } from "@/lib/validation";
 
@@ -27,11 +27,11 @@ export async function saveSettingsAction(
   if (bumpEnabled) {
     if (!bumpProductId)
       return { error: "اختار منتج العرض الإضافي الأول." };
-    const product = await prisma.product.findFirst({
-      where: { id: bumpProductId, active: true },
-    });
+    
+    const product = db.prepare("SELECT * FROM Product WHERE id = ? AND active = 1").get(bumpProductId) as { priceCents: number } | undefined;
     if (!product)
       return { error: "منتج العرض الإضافي مش موجود أو غير مفعّل." };
+    
     if (bumpPrice) {
       const n = Number(bumpPrice.replace(/,/g, ""));
       if (!Number.isFinite(n) || n <= 0)

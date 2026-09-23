@@ -1,5 +1,5 @@
 import "server-only";
-import { prisma } from "@/lib/prisma";
+import db from "@/lib/db";
 
 // ===== حالات الطلب =====
 export const ORDER_STATUSES = [
@@ -31,7 +31,6 @@ const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // بدون أحرف ملت
 
 function randomCode(len = 6): string {
   let out = "";
-  // نستخدم Math.random هنا (مش أمان تشفيري، بس كافي لرقم طلب) — يعمل على الخادم
   for (let i = 0; i < len; i++) {
     out += ALPHABET[Math.floor(Math.random() * ALPHABET.length)];
   }
@@ -41,10 +40,7 @@ function randomCode(len = 6): string {
 async function generateOrderNumber(): Promise<string> {
   for (let attempt = 0; attempt < 6; attempt++) {
     const candidate = `SYX-${randomCode(6)}`;
-    const exists = await prisma.order.findUnique({
-      where: { orderNumber: candidate },
-      select: { id: true },
-    });
+    const exists = db.prepare(`SELECT id FROM "Order" WHERE orderNumber = ?`).get(candidate);
     if (!exists) return candidate;
   }
   // احتياطي شبه مستحيل يتكرر
@@ -60,6 +56,43 @@ export type NewOrderItem = {
   type: string;
 };
 
+export type OrderItem = {
+  id: string;
+  orderId: string;
+  productId: string | null;
+  name: string;
+  priceCents: number;
+  qty: number;
+  type: string;
+};
+
+export type OrderView = {
+  id: string;
+  orderNumber: string;
+  userId: string | null;
+  customerName: string;
+  customerPhone: string;
+  customerEmail: string | null;
+  address: string | null;
+  paymentMethod: string;
+  status: string;
+  subtotalCents: number;
+  shippingCents: number;
+  totalCents: number;
+  proofImage: string | null;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+  items: OrderItem[];
+  user?: {
+    id: string;
+    name: string;
+    email: string;
+    phone: string | null;
+    role: string;
+  } | null;
+};
+
 export type NewOrderInput = {
   userId: string | null;
   customerName: string;
@@ -73,104 +106,126 @@ export type NewOrderInput = {
   items: NewOrderItem[];
 };
 
-export async function createOrder(input: NewOrderInput) {
+export async function createOrder(input: NewOrderInput): Promise<OrderView> {
   const subtotalCents = input.items.reduce(
     (sum, i) => sum + i.priceCents * i.qty,
     0
   );
   const orderNumber = await generateOrderNumber();
+  const orderId = "ord_" + Math.random().toString(36).substring(2, 15);
+  const totalCents = subtotalCents + input.shippingCents;
 
-  return prisma.order.create({
-    data: {
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO "Order" (id, orderNumber, userId, customerName, customerPhone, customerEmail, address, paymentMethod, status, subtotalCents, shippingCents, totalCents, proofImage, note)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      orderId,
       orderNumber,
-      userId: input.userId,
-      customerName: input.customerName,
-      customerPhone: input.customerPhone,
-      customerEmail: input.customerEmail,
-      address: input.address,
-      paymentMethod: input.paymentMethod,
-      proofImage: input.proofImage,
-      note: input.note,
+      input.userId,
+      input.customerName,
+      input.customerPhone,
+      input.customerEmail,
+      input.address,
+      input.paymentMethod,
+      "pending",
       subtotalCents,
-      shippingCents: input.shippingCents,
-      totalCents: subtotalCents + input.shippingCents,
-      status: "pending",
-      items: {
-        create: input.items.map((i) => ({
-          productId: i.productId,
-          name: i.name,
-          priceCents: i.priceCents,
-          qty: i.qty,
-          type: i.type,
-        })),
-      },
-    },
-    include: { items: true },
-  });
+      input.shippingCents,
+      totalCents,
+      input.proofImage,
+      input.note
+    );
+
+    const insertItem = db.prepare(`
+      INSERT INTO OrderItem (id, orderId, productId, name, priceCents, qty, type)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const item of input.items) {
+      const itemId = "item_" + Math.random().toString(36).substring(2, 15);
+      insertItem.run(
+        itemId,
+        orderId,
+        item.productId,
+        item.name,
+        item.priceCents,
+        item.qty,
+        item.type
+      );
+    }
+  })();
+
+  const createdOrder = await getOrderById(orderId);
+  if (!createdOrder) {
+    throw new Error("Failed to retrieve created order");
+  }
+  return createdOrder;
 }
 
 // ===== قراءة =====
-export async function getOrderByNumber(orderNumber: string) {
-  return prisma.order.findUnique({
-    where: { orderNumber: orderNumber.trim().toUpperCase() },
-    include: { items: true },
-  });
+export async function getOrderByNumber(orderNumber: string): Promise<OrderView | null> {
+  const order = db.prepare(`SELECT * FROM "Order" WHERE UPPER(orderNumber) = ?`).get(orderNumber.trim().toUpperCase()) as any;
+  if (!order) return null;
+  
+  const items = db.prepare("SELECT * FROM OrderItem WHERE orderId = ?").all(order.id) as OrderItem[];
+  return { ...order, items };
 }
 
-export async function getUserOrders(userId: string) {
-  return prisma.order.findMany({
-    where: { userId },
-    include: { items: true },
-    orderBy: { createdAt: "desc" },
+export async function getUserOrders(userId: string): Promise<OrderView[]> {
+  const orders = db.prepare(`SELECT * FROM "Order" WHERE userId = ? ORDER BY createdAt DESC`).all(userId) as any[];
+  return orders.map((order) => {
+    const items = db.prepare("SELECT * FROM OrderItem WHERE orderId = ?").all(order.id) as OrderItem[];
+    return { ...order, items };
   });
 }
 
 // ===== أدمن =====
-export async function getAllOrders(status?: string) {
-  return prisma.order.findMany({
-    where: status && ORDER_STATUSES.includes(status as OrderStatus)
-      ? { status }
-      : undefined,
-    include: { items: true },
-    orderBy: { createdAt: "desc" },
+export async function getAllOrders(status?: string): Promise<OrderView[]> {
+  let orders: any[];
+  if (status && ORDER_STATUSES.includes(status as OrderStatus)) {
+    orders = db.prepare(`SELECT * FROM "Order" WHERE status = ? ORDER BY createdAt DESC`).all(status) as any[];
+  } else {
+    orders = db.prepare(`SELECT * FROM "Order" ORDER BY createdAt DESC`).all() as any[];
+  }
+  return orders.map((order) => {
+    const items = db.prepare("SELECT * FROM OrderItem WHERE orderId = ?").all(order.id) as OrderItem[];
+    return { ...order, items };
   });
 }
 
-export async function getOrderById(id: string) {
-  return prisma.order.findUnique({
-    where: { id },
-    include: { items: true, user: true },
-  });
+export async function getOrderById(id: string): Promise<OrderView | null> {
+  const order = db.prepare(`SELECT * FROM "Order" WHERE id = ?`).get(id) as any;
+  if (!order) return null;
+
+  const items = db.prepare("SELECT * FROM OrderItem WHERE orderId = ?").all(id) as OrderItem[];
+  const user = order.userId ? db.prepare("SELECT id, name, email, phone, role FROM User WHERE id = ?").get(order.userId) as any : null;
+  return { ...order, items, user };
 }
 
 export async function updateOrderStatus(id: string, status: OrderStatus) {
-  return prisma.order.update({ where: { id }, data: { status } });
+  db.prepare(`UPDATE "Order" SET status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`).run(status, id);
+  return { id, status };
 }
 
 /** إحصائيات للوحة التحكم */
 export async function getStats() {
-  const [orders, products, users] = await Promise.all([
-    prisma.order.findMany({
-      select: { status: true, subtotalCents: true, totalCents: true },
-    }),
-    prisma.product.count(),
-    prisma.user.count({ where: { role: "customer" } }),
-  ]);
+  const orders = db.prepare(`SELECT status, subtotalCents, totalCents FROM "Order"`).all() as any[];
+  const productsCountRow = db.prepare("SELECT COUNT(*) as count FROM Product").get() as { count: number };
+  const usersCountRow = db.prepare("SELECT COUNT(*) as count FROM User WHERE role = 'customer'").get() as { count: number };
 
   const byStatus: Record<string, number> = {};
   let revenueCents = 0; // إيراد الطلبات المؤكّدة/المسلّمة (المرتجع والملغي مش محسوبين)
   for (const o of orders) {
     byStatus[o.status] = (byStatus[o.status] ?? 0) + 1;
     if (o.status === "confirmed" || o.status === "delivered") {
-      // totalCents (شامل الشحن) — fallback للطلبات القديمة اللي اتعملت قبل عمود الإجمالي
       revenueCents += o.totalCents || o.subtotalCents;
     }
   }
 
   return {
     ordersCount: orders.length,
-    productsCount: products,
-    customersCount: users,
+    productsCount: productsCountRow.count,
+    customersCount: usersCountRow.count,
     revenueCents,
     pending: byStatus["pending"] ?? 0,
     confirmed: byStatus["confirmed"] ?? 0,

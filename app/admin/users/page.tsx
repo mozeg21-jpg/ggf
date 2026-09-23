@@ -1,12 +1,24 @@
-import { prisma } from "@/lib/prisma";
+import db from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
+type UserRow = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string | null;
+  role: string;
+  ordersCount: number;
+};
+
 export default async function AdminUsers() {
-  const users = await prisma.user.findMany({
-    orderBy: { createdAt: "desc" },
-    include: { _count: { select: { orders: true } } },
-  });
+  const users = db.prepare(`
+    SELECT u.id, u.name, u.email, u.phone, u.role, COUNT(o.id) as ordersCount
+    FROM User u
+    LEFT JOIN "Order" o ON u.id = o.userId
+    GROUP BY u.id
+    ORDER BY u.createdAt DESC
+  `).all() as UserRow[];
 
   return (
     <div className="flex flex-col gap-4">
@@ -38,7 +50,7 @@ export default async function AdminUsers() {
                 </p>
               </div>
               <span className="tnum shrink-0 rounded-full border border-line bg-bg px-3 py-1 text-sm text-fg">
-                {u._count.orders} طلب
+                {u.ordersCount} طلب
               </span>
             </li>
           ))}
